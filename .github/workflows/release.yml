@@ -1,0 +1,181 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build (e.g. v0.1.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_LTO: "fat"
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            cross: false
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            cross: false
+            apt: musl-tools
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install cross compile prerequisites
+        if: matrix.apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin rv
+
+      - name: build (cross)
+        if: matrix.cross
+        run: cross build --release --locked --target ${{ matrix.target }} --bin rv
+
+      - name: stage artifacts
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          stage="rv-${TAG}-${TARGET}"
+          mkdir -p "dist/${stage}"
+          cp "target/${TARGET}/release/rv" "dist/${stage}/rv"
+          cp README.md LICENSE "dist/${stage}/" 2>/dev/null || true
+          cd dist
+          tar -czf "${stage}.tar.gz" "${stage}"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          else
+            sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rv-${{ matrix.target }}
+          path: dist/*.tar.gz*
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: combined checksums
+        run: cd dist && shasum -a 256 *.tar.gz > SHA256SUMS
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/SHA256SUMS
+
+  bump-tap:
+    name: bump homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fetch SHA256SUMS
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/O6lvl4/rv/releases/download/${TAG}/SHA256SUMS" -o SHA256SUMS
+          cat SHA256SUMS
+
+      - name: render Formula/rv.rb
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          sha_for() { awk -v f="rv-v${VERSION}-$1.tar.gz" '$2 == f { print $1 }' SHA256SUMS; }
+          A_DAR=$(sha_for aarch64-apple-darwin)
+          X_DAR=$(sha_for x86_64-apple-darwin)
+          A_LIN=$(sha_for aarch64-unknown-linux-musl)
+          X_LIN=$(sha_for x86_64-unknown-linux-musl)
+          for s in "$A_DAR" "$X_DAR" "$A_LIN" "$X_LIN"; do
+            [ -n "$s" ] || { echo "missing sha"; exit 1; }
+          done
+          mkdir -p out/Formula
+          sed \
+            -e "s|{{VERSION}}|${VERSION}|g" \
+            -e "s|{{SHA_DARWIN_ARM64}}|${A_DAR}|g" \
+            -e "s|{{SHA_DARWIN_X86_64}}|${X_DAR}|g" \
+            -e "s|{{SHA_LINUX_ARM64}}|${A_LIN}|g" \
+            -e "s|{{SHA_LINUX_X86_64}}|${X_LIN}|g" \
+            packaging/homebrew/rv.rb.template > out/Formula/rv.rb
+          cat out/Formula/rv.rb
+
+      - name: checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: O6lvl4/homebrew-tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: commit & push
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          cp out/Formula/rv.rb tap/Formula/rv.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/rv.rb
+          if git diff --cached --quiet; then
+            echo "tap formula already at v${VERSION}; nothing to commit"
+            exit 0
+          fi
+          git commit -m "rv: bump to v${VERSION}"
+          git push origin HEAD:main

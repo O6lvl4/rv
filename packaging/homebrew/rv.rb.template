@@ -1,0 +1,39 @@
+class Rv < Formula
+  desc "Ruby version and gem manager — uv-grade speed"
+  homepage "https://github.com/O6lvl4/rv"
+  license "MIT"
+
+  depends_on "ruby-build"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/O6lvl4/rv/releases/download/v{{VERSION}}/rv-v{{VERSION}}-aarch64-apple-darwin.tar.gz"
+      sha256 "{{SHA_DARWIN_ARM64}}"
+    end
+    on_intel do
+      url "https://github.com/O6lvl4/rv/releases/download/v{{VERSION}}/rv-v{{VERSION}}-x86_64-apple-darwin.tar.gz"
+      sha256 "{{SHA_DARWIN_X86_64}}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/O6lvl4/rv/releases/download/v{{VERSION}}/rv-v{{VERSION}}-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "{{SHA_LINUX_ARM64}}"
+    end
+    on_intel do
+      url "https://github.com/O6lvl4/rv/releases/download/v{{VERSION}}/rv-v{{VERSION}}-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "{{SHA_LINUX_X86_64}}"
+    end
+  end
+
+  def install
+    bin.install "rv"
+    bin.install_symlink "rv" => "rvx"
+  end
+
+  test do
+    assert_match "rv", shell_output("#{bin}/rv --version")
+    assert_match "Ruby version", shell_output("#{bin}/rv --help")
+  end
+end

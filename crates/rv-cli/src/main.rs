@@ -1366,7 +1366,7 @@ async fn cmd_self_update(check: bool) -> Result<ExitCode> {
     if !expected.is_empty() && expected != actual {
         bail!("sha256 mismatch: expected {expected}, got {actual}");
     }
-    let tmp = tempdir(&format!("rv-self-update-"))?;
+    let tmp = tempdir("rv-self-update-")?;
     let archive_path = tmp.join(&asset);
     std::fs::write(&archive_path, &bytes)?;
     let f = std::fs::File::open(&archive_path)?;
