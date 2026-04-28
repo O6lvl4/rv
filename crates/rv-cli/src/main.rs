@@ -782,10 +782,7 @@ async fn cmd_x(paths: &Paths, argv: Vec<String>) -> Result<ExitCode> {
         .join("bin")
         .join(&resolved.bin);
     if !bin_path.exists() {
-        let pb = spinner(format!(
-            "installing {}@{}",
-            resolved.name, resolved.version
-        ));
+        let pb = spinner(format!("installing {}@{}", resolved.name, resolved.version));
         let r2 = resolved.clone();
         let p = paths.clone();
         let v = ruby_version.clone();
